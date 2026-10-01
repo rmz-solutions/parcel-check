@@ -1,72 +1,119 @@
 #!/usr/bin/env python3
 """
-app.py -- local point-and-click UI for the parcel checker.
+app.py -- Parcel Check web app.
 
-Run it (or double-click a launcher) and it opens in your browser:
-    python3 app.py
+Upload a property-list CSV and see which parcels are already in HubSpot
+(matched on APN, owner entity, or mailing address), their lead status, whether
+mail to them came back undeliverable, and when they were last mailed.
 
-Why a local server and not just a web page: the page can't call HubSpot
-directly (your token would be exposed and HubSpot blocks browser calls), so
-this small program runs on your own computer, holds the token locally, talks
-to HubSpot for you, and shows the results in your browser. Nothing leaves your
-machine except the read-only calls to HubSpot.
+Runs two ways:
+  * Hosted (Railway): the platform sets $PORT. Binds 0.0.0.0, reads
+    HUBSPOT_TOKEN from the environment, and gates the link behind APP_PASSWORD.
+  * Local: `python3 app.py` -- binds 127.0.0.1 and opens a browser tab.
 
 Standard library only. Python 3.8+.
 """
 
 import csv
+import hashlib
+import hmac
 import io
 import json
 import os
-import socket
 import sys
 import threading
 import time
 import webbrowser
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import parcel_check as pc
 
+VERSION = "2.0.0"
+
+HOSTED = bool(os.environ.get("PORT"))
+PORT = int(os.environ.get("PORT") or os.environ.get("PARCEL_CHECK_PORT") or "8765")
+HOST = "0.0.0.0" if HOSTED else "127.0.0.1"
+
+# Shared-password gate. Set APP_PASSWORD in Railway; empty = no gate (local use).
+APP_PASSWORD = os.environ.get("APP_PASSWORD", "").strip()
+_AUTH_SECRET = os.environ.get("APP_SECRET", "").strip() or (APP_PASSWORD + "::oncore-parcel-check")
+
+MAX_UPLOAD_BYTES = 60 * 1024 * 1024
+
+
+def auth_enabled():
+    return bool(APP_PASSWORD)
+
+
+def _auth_token():
+    return hmac.new(_AUTH_SECRET.encode(), b"authed", hashlib.sha256).hexdigest()
+
 
 def resource_dir():
-    """Where bundled files (ui.html) live -- a temp dir when packaged."""
     if getattr(sys, "frozen", False):
         return getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
     return os.path.dirname(os.path.abspath(__file__))
 
 
 def config_dir():
-    """A persistent, writable place for settings (survives app restarts)."""
-    d = os.path.join(os.path.expanduser("~"), ".parcelcheck")
-    os.makedirs(d, exist_ok=True)
-    return d
+    """Writable settings/cache folder. CONFIG_DIR wins (e.g. a Railway volume)."""
+    candidates = []
+    if os.environ.get("CONFIG_DIR"):
+        candidates.append(os.environ["CONFIG_DIR"])
+    home = os.path.expanduser("~")
+    if home and home != "~" and os.path.isdir(home):
+        candidates.append(os.path.join(home, ".parcelcheck"))
+    candidates.append(os.path.join(resource_dir(), ".parcelcheck"))
+    for d in candidates:
+        try:
+            os.makedirs(d, exist_ok=True)
+            test = os.path.join(d, ".write-test")
+            open(test, "w").close()
+            os.remove(test)
+            return d
+        except OSError:
+            continue
+    return os.getcwd()
 
 
-HERE = resource_dir()
-UI_PATH = os.path.join(HERE, "ui.html")
+UI_PATH = os.path.join(resource_dir(), "ui.html")
 CONFIG_PATH = os.path.join(config_dir(), "config.json")
 CACHE_FILE = os.path.join(config_dir(), "parcels_cache.json")
 META_FILE = os.path.join(config_dir(), "parcels_meta.json")
-PORT = 8765
 
+# Defaults match the onCORE HubSpot portal, so a fresh deploy (Railway's disk is
+# wiped on every redeploy) works without anyone touching Settings.
 DEFAULT_CONFIG = {
     "token": "",
     "props": {
-        "apn": "apn", "owner": "owner_entity", "address": "mailing_address",
-        "status": "lead_status", "name": "name", "county": "",
+        "apn": "apn_1", "owner": "owner", "address": "mailing_address",
+        "status": "hs_lead_status", "name": "name", "county": "county_name",
+        "undeliverable": "mail_undeliverable", "last_mailed": "date_last_mailed",
     },
-    "engaged_statuses": [],
+    "engaged_statuses": [
+        "Interested", "Not Interested", "Future Maybe", "Bad Property",
+        "Lead Submitted", "Lead Accepted", "Lead Rejected", "LOI Sent",
+        "LOI Signed", "Lease Sent", "Redlines Received/Active Negotiation",
+        "Lease Signed", "Dead (went dark)", "Dead (went with competitor)",
+        "Dead (not agreeable on $)", "Dead (option term too long)",
+        "Dead (bad zoning)", "Dead (bad IX)", "Dead (environmental)",
+        "Dead (space too limited)", "Dead (market closed)",
+        "Dead (Client reason other)",
+        "Dead - landowner reason other (describe in notes)",
+        "Dead - self developing/prefer to keep existing use/anti-technology",
+        "Dead", "On hold", "Complete", "In Permitting", "Do NOT Call",
+    ],
     "max_cache_minutes": 60,
 }
 
-# ---- shared parcel cache (in-memory; backed by a disk file across launches) ----
 _LOCK = threading.Lock()
 _CACHE = {"idx": None, "count": 0, "synced_at": 0,
           "apn": 0, "owner": 0, "address": 0}
 
 
 def load_config():
-    cfg = json.loads(json.dumps(DEFAULT_CONFIG))  # deep copy
+    cfg = json.loads(json.dumps(DEFAULT_CONFIG))
     if os.path.exists(CONFIG_PATH):
         try:
             saved = json.load(open(CONFIG_PATH, encoding="utf-8"))
@@ -78,19 +125,28 @@ def load_config():
 
 
 def save_config(cfg):
-    json.dump(cfg, open(CONFIG_PATH, "w", encoding="utf-8"), indent=2)
+    try:
+        json.dump(cfg, open(CONFIG_PATH, "w", encoding="utf-8"), indent=2)
+        try:
+            os.chmod(CONFIG_PATH, 0o600)
+        except OSError:
+            pass
+    except OSError:
+        pass
+
+
+def token_from_env():
+    return os.environ.get("HUBSPOT_TOKEN") or os.environ.get("HUBSPOT_ACCESS_TOKEN") or ""
 
 
 def get_token(cfg):
-    return os.environ.get("HUBSPOT_TOKEN") or cfg.get("token") or ""
+    return token_from_env() or cfg.get("token") or ""
 
 
 def _needed_props(props):
-    names = [props.get("apn"), props.get("owner"), props.get("address"),
-             props.get("status"), props.get("name")]
-    if props.get("county"):
-        names.append(props["county"])
-    return [n for n in names if n]
+    keys = ("apn", "owner", "address", "status", "name", "county",
+            "undeliverable", "last_mailed")
+    return [props[k] for k in keys if props.get(k)]
 
 
 def _save_disk_cache(companies, props_fetched):
@@ -98,8 +154,6 @@ def _save_disk_cache(companies, props_fetched):
     try:
         json.dump({"saved_at": saved_at, "props_fetched": props_fetched,
                    "companies": companies}, open(CACHE_FILE, "w"))
-        # small sidecar so the UI can show count + last-sync time instantly,
-        # without parsing the (potentially large) full cache file
         json.dump({"saved_at": saved_at, "count": len(companies),
                    "props_fetched": props_fetched}, open(META_FILE, "w"))
     except Exception:
@@ -116,7 +170,6 @@ def _load_disk_cache():
 
 
 def _disk_summary():
-    """count + last-sync time read from the lightweight meta file (or None)."""
     try:
         if os.path.exists(META_FILE):
             m = json.load(open(META_FILE))
@@ -134,26 +187,27 @@ def _set_cache(idx, count, synced_at):
 
 
 def _stale(ts, max_age):
-    """True if a cache timestamp is older than max_age seconds (0 = never expire)."""
     if max_age <= 0:
         return False
     return (not ts) or (time.time() - ts) > max_age
 
 
+def invalidate_cache():
+    with _LOCK:
+        _CACHE["idx"] = None
+
+
 def do_sync(cfg, force=False):
-    """Return indexed parcels. Order of preference: in-memory cache, then the
-    on-disk cache (instant, no network), then a fresh HubSpot fetch. A cache
-    older than max_cache_minutes is treated as stale and refreshed automatically."""
+    """Indexed parcels: memory cache, then disk cache, then a fresh HubSpot pull."""
     token = get_token(cfg)
     if not token:
-        raise ValueError("No HubSpot token set. Add it under Settings.")
+        raise ValueError("No HubSpot token set." + ("" if HOSTED else " Add it under Settings."))
     max_age = float(cfg.get("max_cache_minutes", 60)) * 60
     with _LOCK:
         if _CACHE["idx"] is not None and not force and not _stale(_CACHE["synced_at"], max_age):
             return _summary()
         props = cfg["props"]
         need = _needed_props(props)
-        # disk cache: usable only if it holds every property we need AND is fresh
         if not force:
             cached = _load_disk_cache()
             if (cached and set(need).issubset(set(cached.get("props_fetched", [])))
@@ -161,7 +215,6 @@ def do_sync(cfg, force=False):
                 idx = pc.build_indexes(cached["companies"], props)
                 _set_cache(idx, len(cached["companies"]), cached.get("saved_at", 0))
                 return _summary()
-        # fresh fetch from HubSpot (the slow path)
         companies = pc.fetch_all_companies(token, need)
         _save_disk_cache(companies, need)
         idx = pc.build_indexes(companies, props)
@@ -185,30 +238,31 @@ def run_check(cfg, csv_text, client_cols=None):
     if not headers:
         raise ValueError("That file has no header row / columns.")
 
-    # The app auto-locates columns and lets the user confirm/correct them, so a
-    # confirmed mapping arrives from the client. Fall back to auto-detect.
     auto = pc.detect_columns(headers)
     cols = {}
     for f in ("apn", "owner", "address", "county"):
         v = (client_cols or {}).get(f)
         cols[f] = v if v else auto.get(f)
-    # only honor county scoping if a county HubSpot property is configured
     county_active = bool(cfg["props"].get("county"))
 
     engaged = {s.strip().lower() for s in cfg.get("engaged_statuses", []) if s.strip()}
+    mail_enabled = bool(cfg["props"].get("undeliverable") or cfg["props"].get("last_mailed"))
 
     extra = ["match_found", "matched_on", "matched_lead_status"]
     if engaged:
         extra.append("already_engaged")
+    if mail_enabled:
+        extra += ["mail_undeliverable", "date_last_mailed"]
     extra += ["matched_hs_name", "matched_hs_id"]
 
-    out_rows, n_matched, n_engaged = [], 0, 0
+    out_rows, n_matched, n_engaged, n_undeliv, n_mailed = [], 0, 0, 0, 0
     for row in rows:
         types, matches = pc.match_row(row, cols, idx, county_active=county_active)
         out = dict(row)
         if matches:
             n_matched += 1
-            statuses, names, ids, vias = [], [], [], set()
+            statuses, names, ids, vias, mailed = [], [], [], set(), []
+            undeliv = False
             for m in matches:
                 rec = m["rec"]
                 if rec["status"]:
@@ -216,6 +270,9 @@ def run_check(cfg, csv_text, client_cols=None):
                 names.append(rec["name"])
                 ids.append(str(rec["id"]))
                 vias |= m["via"]
+                undeliv = undeliv or rec.get("undeliverable", False)
+                if rec.get("last_mailed"):
+                    mailed.append(rec["last_mailed"])
             out["match_found"] = "YES"
             out["matched_on"] = ";".join(sorted(vias))
             out["matched_lead_status"] = ";".join(sorted(set(statuses)))
@@ -226,13 +283,17 @@ def run_check(cfg, csv_text, client_cols=None):
                 out["already_engaged"] = "YES" if is_eng else "no"
                 if is_eng:
                     n_engaged += 1
+            if mail_enabled:
+                out["mail_undeliverable"] = "YES" if undeliv else ""
+                out["date_last_mailed"] = max(mailed) if mailed else ""
+                n_undeliv += 1 if undeliv else 0
+                n_mailed += 1 if mailed else 0
         else:
             out["match_found"] = "no"
             for col in extra:
                 out.setdefault(col, "")
         out_rows.append(out)
 
-    # build output CSV
     buf = io.StringIO()
     w = csv.DictWriter(buf, fieldnames=headers + extra)
     w.writeheader()
@@ -240,55 +301,147 @@ def run_check(cfg, csv_text, client_cols=None):
 
     return {
         "total": len(rows), "matched": n_matched, "engaged": n_engaged,
+        "undeliverable": n_undeliv, "mailed": n_mailed,
         "columns": headers + extra, "rows": out_rows[:200],
         "truncated": len(out_rows) > 200,
         "csv": buf.getvalue(), "cols_used": cols,
-        "engaged_enabled": bool(engaged),
+        "engaged_enabled": bool(engaged), "mail_enabled": mail_enabled,
     }
 
 
+def _warm_loop():
+    """Keep the parcel cache warm so the first check of the day is instant."""
+    while True:
+        cfg = load_config()
+        try:
+            if get_token(cfg):
+                s = do_sync(cfg)
+                print("Parcel cache: %d parcels (synced %s)" % (
+                    s["count"], time.strftime("%Y-%m-%d %H:%M", time.localtime(s["synced_at"]))))
+        except BaseException as e:  # pc raises SystemExit on API failure
+            print("Parcel cache refresh failed: %s" % e)
+        minutes = float(cfg.get("max_cache_minutes", 60)) or 60
+        time.sleep(max(60, minutes * 60 + 5))
+
+
 # ===========================================================================
-# HTTP handler
+# HTTP
 # ===========================================================================
+
+LOGIN_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Parcel Check</title>
+<style>
+  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+    background:#EEF1EF;color:#16242B;font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  .box{background:#fff;border:1px solid #DBE3E0;border-radius:12px;padding:26px 24px;width:92%;max-width:340px;
+    box-shadow:0 1px 2px rgba(16,40,45,.06),0 8px 24px rgba(16,40,45,.05)}
+  h1{font-size:20px;margin:0 0 16px}
+  input{width:100%;box-sizing:border-box;font-size:16px;padding:10px 12px;border:1px solid #DBE3E0;
+    border-radius:8px;margin-bottom:12px}
+  button{width:100%;font:inherit;font-weight:650;padding:11px;border:0;border-radius:9px;
+    background:#1F6F6B;color:#fff;cursor:pointer}
+  .err{color:#7A271A;font-size:13px;min-height:18px;margin-bottom:6px}
+</style></head><body>
+<form class="box" id="f">
+  <h1>Parcel Check</h1>
+  <div class="err" id="e"></div>
+  <input type="password" id="p" placeholder="Team password" autofocus aria-label="Password">
+  <button type="submit">Enter</button>
+</form>
+<script>
+document.getElementById("f").addEventListener("submit", async e => {
+  e.preventDefault();
+  const r = await fetch("/api/login", {method:"POST",headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({password: document.getElementById("p").value})});
+  if (r.ok) { location.href = "/"; }
+  else { document.getElementById("e").textContent = "Wrong password."; document.getElementById("p").select(); }
+});
+</script></body></html>
+"""
+
+PAGE = ""
+
 
 class Handler(BaseHTTPRequestHandler):
-    def log_message(self, *a):  # quiet console
+    server_version = "ParcelCheck/" + VERSION
+
+    def log_message(self, *a):
         pass
 
-    def _send(self, code, body, ctype="application/json"):
+    def _send(self, code, body, ctype="application/json", headers=None):
         data = body.encode("utf-8") if isinstance(body, str) else body
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
         self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
-    def _json(self, code, obj):
-        self._send(code, json.dumps(obj))
+    def _json(self, code, obj, headers=None):
+        self._send(code, json.dumps(obj), headers=headers)
 
     def _body(self):
-        n = int(self.headers.get("Content-Length", 0))
+        n = int(self.headers.get("Content-Length") or 0)
+        if n > MAX_UPLOAD_BYTES:
+            raise ValueError("File is too large (limit %d MB)." % (MAX_UPLOAD_BYTES // 1024 // 1024))
         return json.loads(self.rfile.read(n) or b"{}")
 
+    def _authed(self):
+        if not auth_enabled():
+            return True
+        morsel = SimpleCookie(self.headers.get("Cookie", "")).get("parcel_auth")
+        return bool(morsel and hmac.compare_digest(morsel.value, _auth_token()))
+
+    def _path(self):
+        return self.path.split("?", 1)[0]
+
     def do_GET(self):
-        if self.path in ("/", "/index.html"):
+        path = self._path()
+        if path == "/healthz":
+            return self._send(200, "ok", "text/plain")
+        if not self._authed():
+            if path in ("/", "/index.html"):
+                return self._send(200, LOGIN_PAGE, "text/html; charset=utf-8")
+            return self._json(401, {"error": "Login required."})
+        if path in ("/", "/index.html"):
             return self._send(200, PAGE, "text/html; charset=utf-8")
-        if self.path == "/api/config":
+        if path == "/api/config":
             cfg = load_config()
             safe = {"props": cfg["props"],
                     "engaged_statuses": cfg["engaged_statuses"],
                     "max_cache_minutes": cfg.get("max_cache_minutes", 60),
                     "token_set": bool(get_token(cfg)),
-                    "token_from_env": bool(os.environ.get("HUBSPOT_TOKEN")),
+                    "token_from_env": bool(token_from_env()),
+                    "hosted": HOSTED, "version": VERSION,
                     "cache": _summary() if _CACHE["idx"] is not None else _disk_summary()}
             return self._json(200, safe)
         return self._send(404, "Not found", "text/plain")
 
     def do_POST(self):
+        path = self._path()
         try:
-            if self.path == "/api/config":
+            if path == "/api/login":
+                pw = (self._body().get("password") or "").strip()
+                if auth_enabled() and hmac.compare_digest(pw, APP_PASSWORD):
+                    cookie = ("parcel_auth=%s; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000"
+                              % _auth_token())
+                    if HOSTED:
+                        cookie += "; Secure"
+                    return self._json(200, {"ok": True}, headers={"Set-Cookie": cookie})
+                return self._json(401, {"error": "Wrong password."})
+
+            if not self._authed():
+                return self._json(401, {"error": "Login required."})
+
+            if path == "/api/config":
                 body = self._body()
                 cfg = load_config()
+                old_props = dict(cfg["props"])
                 if "props" in body:
                     cfg["props"] = {**cfg["props"], **body["props"]}
                 if "engaged_statuses" in body:
@@ -298,40 +451,38 @@ class Handler(BaseHTTPRequestHandler):
                         cfg["max_cache_minutes"] = max(0, int(body["max_cache_minutes"]))
                     except (TypeError, ValueError):
                         pass
-                if "token" in body and body["token"] != "":
+                if "token" in body and body["token"] != "" and not token_from_env():
                     cfg["token"] = body["token"]
                 save_config(cfg)
+                if cfg["props"] != old_props:
+                    invalidate_cache()
                 return self._json(200, {"ok": True})
 
-            if self.path == "/api/properties":
+            if path == "/api/properties":
                 cfg = load_config()
                 token = get_token(cfg)
                 if not token:
                     return self._json(400, {"error": "No token set yet."})
-                props = pc.get_company_properties_detailed(token)
-                return self._json(200, {"properties": props})
+                return self._json(200, {"properties": pc.get_company_properties_detailed(token)})
 
-            if self.path == "/api/sync":
+            if path == "/api/sync":
                 cfg = load_config()
                 force = self._body().get("force", False)
                 return self._json(200, do_sync(cfg, force=force))
 
-            if self.path == "/api/detect":
+            if path == "/api/detect":
                 headers = self._body().get("headers", [])
                 return self._json(200, {"cols": pc.detect_columns(headers)})
 
-            if self.path == "/api/check":
+            if path == "/api/check":
                 cfg = load_config()
                 body = self._body()
-                result = run_check(cfg, body.get("csv_text", ""),
-                                   client_cols=body.get("cols"))
-                return self._json(200, result)
+                return self._json(200, run_check(cfg, body.get("csv_text", ""),
+                                                 client_cols=body.get("cols")))
 
-            if self.path == "/api/quit":
+            if path == "/api/quit" and not HOSTED:
                 self._json(200, {"ok": True})
-                threading.Thread(
-                    target=lambda: (time.sleep(0.3), os._exit(0)), daemon=True
-                ).start()
+                threading.Thread(target=lambda: (time.sleep(0.3), os._exit(0)), daemon=True).start()
                 return
 
             return self._send(404, "Not found", "text/plain")
@@ -340,43 +491,33 @@ class Handler(BaseHTTPRequestHandler):
         except SystemExit as e:
             return self._json(502, {"error": str(e)})
         except Exception as e:
-            return self._json(500, {"error": f"{type(e).__name__}: {e}"})
-
-
-PAGE = ""  # injected below from ui.html at startup
-
-
-def find_port(start):
-    for p in range(start, start + 25):
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        try:
-            s.bind(("127.0.0.1", p))
-            return p
-        except OSError:
-            continue
-        finally:
-            s.close()
-    return start
+            return self._json(500, {"error": "%s: %s" % (type(e).__name__, e)})
 
 
 def main():
     global PAGE
-    PAGE = open(UI_PATH, encoding="utf-8").read()
-    if not os.path.exists(CONFIG_PATH):
-        save_config(DEFAULT_CONFIG)
-    port = find_port(PORT)
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    url = f"http://127.0.0.1:{port}/"
-    print(f"\n  Parcel Check is running.\n  Open this in your browser:  {url}\n"
-          f"  (Use the Quit button in the app, or close this window, to stop.)\n")
     try:
-        webbrowser.open(url)
+        sys.stdout.reconfigure(line_buffering=True)
     except Exception:
         pass
+    PAGE = open(UI_PATH, encoding="utf-8").read().replace("__VERSION__", VERSION)
+    server = ThreadingHTTPServer((HOST, PORT), Handler)
+    print("Parcel Check v%s" % VERSION)
+    if HOSTED:
+        print("Listening on %s:%d (hosted)" % (HOST, PORT))
+        if not auth_enabled():
+            print("WARNING: APP_PASSWORD is not set -- the link is open to anyone who has it.")
+        if not token_from_env():
+            print("WARNING: no HUBSPOT_TOKEN in the environment -- checks will fail.")
+    else:
+        url = "http://127.0.0.1:%d/" % PORT
+        print("Open: %s   (Ctrl+C to quit)" % url)
+        threading.Timer(0.8, lambda: webbrowser.open(url)).start()
+    threading.Thread(target=_warm_loop, daemon=True).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\n  Stopped.")
+        print("\nStopped.")
 
 
 if __name__ == "__main__":

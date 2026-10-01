@@ -1,0 +1,6 @@
+__pycache__/
+.parcelcheck/
+build/
+dist/
+*.spec
+.DS_Store

@@ -67,7 +67,8 @@ PAGE_LIMIT = 100  # max allowed by the list endpoint
 _ENTITY_NOISE = {
     "LLC", "LLLP", "LP", "LLP", "INC", "INCORPORATED", "CORP", "CORPORATION",
     "CO", "COMPANY", "TRUST", "TR", "TRUSTEE", "TRUSTEES", "TTEE", "REVOCABLE",
-    "REV", "IRREVOCABLE", "LIVING", "LIV", "FAMILY", "FAM", "THE", "ESTATE",
+    "REV", "REVOC", "IRREVOCABLE", "IRREV", "LIVING", "LIV", "LVG", "FAMILY",
+    "FAM", "THE", "ESTATE", "EST", "TTEES", "DECD", "SURVIVOR", "SURV",
     "ET", "AL", "ETAL", "ETUX", "ETVIR", "JT", "JTRS", "JTWROS", "AND", "&",
 }
 # strip "DTD 1/1/2020", "DATED 01-01-2020", "U/T/D ...", trailing date noise
@@ -157,11 +158,17 @@ def normalize_entity(value):
 
 
 def normalize_address(value):
-    """Standardize a US mailing address for comparison (suffixes/directionals)."""
+    """Standardize a US mailing address for comparison.
+
+    Lists often store the full "street, city, ST zip" while HubSpot stores just
+    the street line (or vice-versa), so we compare only the STREET portion -- the
+    text before the first comma. This makes the two representations match.
+    """
     if not value:
         return ""
-    s = str(value).upper()
-    s = re.sub(r"[.,#]", " ", s)
+    s = str(value).split(",")[0]          # keep the street line only
+    s = s.upper()
+    s = re.sub(r"[.#]", " ", s)
     s = re.sub(r"[^A-Z0-9 ]", " ", s)
     out = []
     for tok in s.split():
@@ -171,6 +178,25 @@ def normalize_address(value):
         tok = _STREET_SUFFIX.get(tok, tok)
         out.append(tok)
     return " ".join(out)
+
+
+def is_true(value):
+    """HubSpot booleans / Yes-No enumerations arrive as 'true', 'Yes', etc."""
+    return str(value or "").strip().lower() in ("true", "yes", "y", "1")
+
+
+def mail_date(value):
+    """Return a HubSpot date as YYYY-MM-DD. Accepts '2026-08-14', an ISO
+    datetime, or epoch milliseconds."""
+    v = str(value or "").strip()
+    if not v:
+        return ""
+    if v.isdigit():
+        try:
+            return time.strftime("%Y-%m-%d", time.gmtime(int(v) / 1000))
+        except (OverflowError, ValueError, OSError):
+            return ""
+    return v[:10]
 
 
 # ===========================================================================
@@ -272,6 +298,8 @@ def build_indexes(companies, props=None):
             "address": p.get(props["address"], "") or "",
             "status": p.get(props["status"], "") or "",
             "county": (p.get(county_prop, "") or "") if county_prop else "",
+            "undeliverable": is_true(p.get(props.get("undeliverable") or "", "")),
+            "last_mailed": mail_date(p.get(props.get("last_mailed") or "", "")),
         }
         apn_n = normalize_apn(rec["apn"])
         if apn_n:

@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Parcel Check</title>
+<meta name="robots" content="noindex">
 <style>
   :root{
     --paper:#EEF1EF; --panel:#FFFFFF; --ink:#16242B; --muted:#5A6B72;
@@ -110,6 +111,10 @@
   .badge-yes{font-weight:700;color:var(--match)}
   .badge-eng{font-weight:700;color:var(--engaged)}
   .badge-no{color:var(--muted)}
+  .badge-und{font-weight:700;color:#fff;background:#9F1239;padding:1px 7px;border-radius:5px;font-size:11.5px}
+  .undtag{color:#9F1239;background:#FCE7EC;border-color:#F3C1CD}
+  .mailtag{color:var(--accent-d);background:#EAF2F1;border-color:#CFE3E1}
+  tr.und td:first-child{box-shadow:inset 3px 0 0 #9F1239}
   .trunc{font-size:12px;color:var(--muted);padding:9px 12px}
   /* settings */
   .field{margin-bottom:20px}
@@ -143,7 +148,7 @@
       <div class="eyebrow">Land acquisition · records check</div>
       <h1>Parcel Check <span class="codey">// HubSpot</span></h1>
     </div>
-    <p class="sub">Upload a new property list and see which parcels are already on file in HubSpot — matched by APN, owner, or mailing address — and where each one stands.</p>
+    <p class="sub">Upload a new property list and see which parcels are already on file in HubSpot — matched by APN, owner, or mailing address — where each one stands, whether mail came back undeliverable, and when it was last mailed.</p>
   </header>
 
   <nav>
@@ -157,7 +162,7 @@
       <span class="label">Your new property list</span>
       <div id="drop" class="drop">
         <div><strong>Choose a CSV</strong> or drop it here</div>
-        <div class="hint">Your file is read on this computer and matched against HubSpot. Nothing is uploaded anywhere.</div>
+        <div class="hint">Matched against HubSpot. Your file is not stored.</div>
         <input id="file" type="file" accept=".csv,text/csv" hidden>
       </div>
       <div id="filebar" class="filebar" style="display:none">
@@ -184,7 +189,7 @@
       <div class="synced" id="syncline" style="display:none">
         Parcels loaded: <b id="synccount">—</b> · last refreshed <span id="syncwhen">—</span>
         <a onclick="resync()">Refresh from HubSpot</a>
-        <span style="color:var(--muted)">· auto-refreshes hourly</span>
+        <span style="color:var(--muted)" id="autorefresh">· auto-refreshes hourly</span>
       </div>
     </div>
 
@@ -195,6 +200,8 @@
           <div class="t" id="stamptitle">already on file</div>
           <div class="d" id="stampdesc"></div>
           <span id="engtag" class="engtag" style="display:none"></span>
+          <span id="undtag" class="engtag undtag" style="display:none"></span>
+          <span id="mailtag" class="engtag mailtag" style="display:none"></span>
         </div>
         <button class="btn" onclick="download()">Download results CSV</button>
       </div>
@@ -207,8 +214,8 @@
   <section id="panel-settings" class="panel">
     <div class="card">
       <p class="sec-title">HubSpot connection</p>
-      <p class="sec-sub">A read-only HubSpot Service Key (or legacy Private App token). Stored only on this computer.</p>
-      <div class="field">
+      <p class="sec-sub" id="tokensub">A read-only HubSpot Service Key (or legacy Private App token). Stored only on this computer.</p>
+      <div class="field" id="tokenfield">
         <span class="label">Access token</span>
         <input id="token" type="password" placeholder="Paste your HubSpot key  (leave blank to keep current)">
         <p class="help" id="tokenstate"></p>
@@ -238,6 +245,8 @@
         <span class="ml">Mailing address</span><select id="p-address" data-k="address"></select>
         <span class="ml">Lead status</span><select id="p-status" data-k="status" onchange="renderStatuses()"></select>
         <span class="ml">County <span style="font-weight:400;color:var(--muted)">(optional)</span></span><select id="p-county" data-k="county"></select>
+        <span class="ml">Mail undeliverable</span><select id="p-undeliverable" data-k="undeliverable"></select>
+        <span class="ml">Date last mailed</span><select id="p-last_mailed" data-k="last_mailed"></select>
       </div>
       <p class="help" style="margin-top:8px">Set a County property only if you work across multiple counties — APNs can repeat between counties, so this scopes APN matches to the same county. Leave it as “none” otherwise.</p>
 
@@ -257,7 +266,7 @@
   </section>
 </div>
 
-<div style="max-width:980px;margin:0 auto;padding:14px 22px 44px;text-align:center">
+<div id="quitwrap" style="max-width:980px;margin:0 auto;padding:14px 22px 44px;text-align:center">
   <a id="quitlink" style="color:var(--muted);font-size:12.5px;cursor:pointer;text-decoration:underline"
      onclick="quitApp()">Quit Parcel Check</a>
 </div>
@@ -270,6 +279,7 @@ function showTab(t){
   document.getElementById('panel-settings').classList.toggle('on',t==='settings');
   document.getElementById('tab-check').classList.toggle('on',t==='check');
   document.getElementById('tab-settings').classList.toggle('on',t==='settings');
+  if(t==='settings' && !PROPS.length && CONFIG && CONFIG.token_set) loadProps();
 }
 function fmtTime(ts){ if(!ts) return '—'; const d=new Date(ts*1000);
   return d.toLocaleString([], {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}); }
@@ -389,6 +399,11 @@ function paintResult(r){
   const et=document.getElementById('engtag');
   if(r.engaged_enabled){ et.style.display='inline-block';
     et.textContent=`${r.engaged} already engaged`; } else et.style.display='none';
+  const ut=document.getElementById('undtag'), mt=document.getElementById('mailtag');
+  if(r.mail_enabled){
+    ut.style.display='inline-block'; ut.textContent=`${r.undeliverable} mail undeliverable`;
+    mt.style.display='inline-block'; mt.textContent=`${r.mailed} mailed before`;
+  } else { ut.style.display='none'; mt.style.display='none'; }
 
   // table
   const t=document.getElementById('rtable');
@@ -396,7 +411,8 @@ function paintResult(r){
   for(const row of r.rows){
     const hit=row.match_found==='YES';
     const eng=row.already_engaged==='YES';
-    html+=`<tr class="${hit?(eng?'hit eng':'hit'):''}">`;
+    const und=row.mail_undeliverable==='YES';
+    html+=`<tr class="${hit?'hit':''}${eng?' eng':''}${und?' und':''}">`;
     for(const c of r.columns){
       let v=row[c]==null?'':String(row[c]);
       let cell=esc(v);
@@ -404,6 +420,8 @@ function paintResult(r){
       else if(c==='match_found') cell=hit?'<span class="badge-yes">YES</span>':'<span class="badge-no">no</span>';
       else if(c==='already_engaged') cell=eng?'<span class="badge-eng">YES</span>':'<span class="badge-no">'+esc(v)+'</span>';
       else if(c==='matched_hs_id'&&v) cell=`<span class="code">${esc(v)}</span>`;
+      else if(c==='mail_undeliverable') cell=und?'<span class="badge-und">UNDELIVERABLE</span>':'';
+      else if(c==='date_last_mailed'&&v) cell=`<span class="code">${esc(v)}</span>`;
       html+=`<td>${cell}</td>`;
     }
     html+='</tr>';
@@ -493,14 +511,25 @@ async function saveSettings(){
 // ---- config / api ----
 async function api(path,body){
   const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
+  if(r.status===401){ location.reload(); throw new Error('Login required.'); }
   const d=await r.json();
   if(!r.ok) throw new Error(d.error||('Error '+r.status));
   return d;
 }
 async function refreshConfig(){
-  CONFIG=await (await fetch('/api/config')).json();
+  const cr=await fetch('/api/config');
+  if(cr.status===401){ location.reload(); return; }
+  CONFIG=await cr.json();
   // token state
   const ts=document.getElementById('tokenstate');
+  document.getElementById('tokenfield').style.display = CONFIG.token_from_env ? 'none' : '';
+  document.getElementById('tokensub').textContent = CONFIG.token_from_env
+    ? 'Connected with the server’s HubSpot key.'
+    : 'A read-only HubSpot Service Key (or legacy Private App token). Stored only on this computer.';
+  document.getElementById('quitwrap').style.display = CONFIG.hosted ? 'none' : '';
+  const mins=CONFIG.max_cache_minutes==null?60:CONFIG.max_cache_minutes;
+  document.getElementById('autorefresh').textContent = mins>0
+    ? (mins===60?'· auto-refreshes hourly':`· auto-refreshes every ${mins} min`) : '· manual refresh only';
   if(CONFIG.token_from_env) ts.textContent='Using the token from your HUBSPOT_TOKEN environment variable.';
   else if(CONFIG.token_set) ts.textContent='A token is saved on this computer. Leave blank to keep it.';
   else ts.textContent='No token saved yet.';
