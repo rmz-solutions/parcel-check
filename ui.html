@@ -1,0 +1,526 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Parcel Check</title>
+<style>
+  :root{
+    --paper:#EEF1EF; --panel:#FFFFFF; --ink:#16242B; --muted:#5A6B72;
+    --line:#DBE3E0; --line2:#EAEEEC; --accent:#1F6F6B; --accent-d:#185955;
+    --match:#B45309; --match-bg:#FBF1E4; --engaged:#9A3412; --clear:#3F6212;
+    --shadow:0 1px 2px rgba(16,40,45,.06),0 8px 24px rgba(16,40,45,.05);
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);
+    font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+  header{padding:30px 0 16px;display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
+  .eyebrow{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--muted);
+    font-weight:600}
+  h1{font-size:25px;font-weight:680;letter-spacing:-.01em;margin:0}
+  h1 .codey{font-family:var(--mono);font-weight:600;color:var(--accent);font-size:.8em}
+  .sub{color:var(--muted);font-size:13px;margin:2px 0 0;flex-basis:100%}
+  nav{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-top:22px}
+  nav button{appearance:none;border:0;background:none;font:inherit;cursor:pointer;
+    padding:11px 16px;color:var(--muted);font-weight:600;font-size:14px;
+    border-bottom:2px solid transparent;margin-bottom:-1px}
+  nav button.on{color:var(--ink);border-bottom-color:var(--accent)}
+  .panel{display:none;padding-top:26px}
+  .panel.on{display:block}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    box-shadow:var(--shadow);padding:22px}
+  .card+.card{margin-top:16px}
+  .label{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);
+    font-weight:600;display:block;margin-bottom:7px}
+  /* drop zone */
+  .drop{border:1.5px dashed var(--line);border-radius:12px;background:#FBFCFB;
+    padding:34px 22px;text-align:center;cursor:pointer;transition:.15s}
+  .drop:hover,.drop.over{border-color:var(--accent);background:#F4F8F7}
+  .drop strong{color:var(--accent)}
+  .drop .hint{color:var(--muted);font-size:13px;margin-top:6px}
+  .filebar{display:flex;align-items:center;gap:10px;margin-top:14px;font-size:14px}
+  .filebar .name{font-family:var(--mono);font-size:13px}
+  .filebar .x{margin-left:auto;color:var(--muted);cursor:pointer;border:0;background:none;
+    font:inherit;text-decoration:underline}
+  .colmap{margin-top:16px;border:1px solid var(--line);border-radius:10px;padding:14px 16px;background:#FAFCFB}
+  .colmap-head{font-size:12px;letter-spacing:.04em;font-weight:700;color:var(--ink);margin-bottom:12px;text-transform:uppercase}
+  .colmap-sub{font-weight:500;text-transform:none;letter-spacing:0;color:var(--muted)}
+  .colmap select{width:100%;font:inherit;font-size:13.5px;padding:7px 9px;border:1px solid var(--line);border-radius:7px;background:#fff}
+  .colmap .ml{font-size:13px;font-weight:600;display:flex;flex-direction:column;gap:2px;justify-content:center}
+  .colmap .hsmap{font-weight:400;font-size:11px;color:var(--muted)}
+  .colmap .hsmap code{font-family:var(--mono);font-size:10.5px;background:#EAF2F1;color:var(--accent-d);padding:1px 5px;border-radius:4px}
+  .colmap .auto{font-size:11px;color:var(--clear);font-weight:600}
+  .colmap .miss{font-size:11px;color:var(--match);font-weight:600}
+  .colmap-warn{margin-top:10px;font-size:12.5px;color:var(--match)}
+  /* buttons */
+  .btn{appearance:none;border:0;border-radius:9px;font:inherit;font-weight:650;
+    cursor:pointer;padding:11px 20px;background:var(--accent);color:#fff;transition:.12s}
+  .btn:hover{background:var(--accent-d)}
+  .btn:disabled{opacity:.45;cursor:not-allowed}
+  .btn.ghost{background:#fff;color:var(--ink);border:1px solid var(--line)}
+  .btn.ghost:hover{background:#F4F8F7;border-color:var(--accent)}
+  .btn.sm{padding:7px 13px;font-size:13px}
+  .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:18px}
+  .synced{font-size:12.5px;color:var(--muted);margin-top:14px}
+  .synced b{color:var(--ink);font-family:var(--mono);font-weight:600}
+  .synced a{color:var(--accent);cursor:pointer;text-decoration:underline;margin-left:6px}
+  /* status / progress */
+  .status{display:none;align-items:center;gap:11px;margin-top:18px;font-size:14px;color:var(--muted)}
+  .status.on{display:flex}
+  .spin{width:15px;height:15px;border:2px solid var(--line);border-top-color:var(--accent);
+    border-radius:50%;animation:sp .7s linear infinite;flex:none}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  .err{display:none;margin-top:16px;padding:12px 14px;border-radius:9px;
+    background:#FCEEED;border:1px solid #F3C9C4;color:#7A271A;font-size:13.5px}
+  .err.on{display:block}
+  /* result summary */
+  .summary{display:none;margin-top:24px}
+  .summary.on{display:block}
+  .stamp{display:flex;align-items:flex-end;gap:18px;flex-wrap:wrap;
+    padding:20px 22px;border:1px solid var(--line);border-radius:12px;background:var(--panel);
+    box-shadow:var(--shadow)}
+  .bignum{font-family:var(--mono);font-size:46px;font-weight:600;line-height:.95;
+    letter-spacing:-.02em}
+  .bignum .of{color:var(--muted);font-size:21px;font-weight:500}
+  .stampnote{flex:1;min-width:200px}
+  .stampnote .t{font-weight:650;font-size:15px}
+  .stampnote .d{color:var(--muted);font-size:13px;margin-top:2px}
+  .engtag{display:inline-block;margin-top:8px;font-size:12px;font-weight:650;
+    color:var(--engaged);background:#FBEAE3;border:1px solid #EBC7B7;
+    padding:3px 9px;border-radius:99px}
+  /* table */
+  .tablewrap{margin-top:18px;border:1px solid var(--line);border-radius:12px;
+    overflow:auto;max-height:460px;background:var(--panel)}
+  table{border-collapse:collapse;width:100%;font-size:13px}
+  th{position:sticky;top:0;background:#F4F6F5;text-align:left;font-weight:650;
+    font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);
+    padding:9px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
+  td{padding:8px 12px;border-bottom:1px solid var(--line2);white-space:nowrap;
+    max-width:280px;overflow:hidden;text-overflow:ellipsis}
+  tr.hit td{background:var(--match-bg)}
+  tr.hit td:first-child{box-shadow:inset 3px 0 0 var(--match)}
+  tr.eng td:first-child{box-shadow:inset 3px 0 0 var(--engaged)}
+  .code{font-family:var(--mono);font-size:12px}
+  .chip{display:inline-block;font-family:var(--mono);font-size:10.5px;font-weight:600;
+    padding:2px 6px;border-radius:5px;margin-right:4px;letter-spacing:.04em;
+    background:#EAF2F1;color:var(--accent-d);border:1px solid #CFE3E1}
+  .badge-yes{font-weight:700;color:var(--match)}
+  .badge-eng{font-weight:700;color:var(--engaged)}
+  .badge-no{color:var(--muted)}
+  .trunc{font-size:12px;color:var(--muted);padding:9px 12px}
+  /* settings */
+  .field{margin-bottom:20px}
+  .field .help{font-size:12.5px;color:var(--muted);margin:5px 0 0}
+  input[type=text],input[type=password],select{width:100%;font:inherit;font-size:14px;
+    padding:9px 11px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink)}
+  input:focus,select:focus{outline:2px solid #BFE0DD;outline-offset:0;border-color:var(--accent)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .mapgrid{display:grid;grid-template-columns:140px 1fr;gap:10px 14px;align-items:center}
+  .mapgrid .ml{font-size:13px;font-weight:600}
+  .checks{display:flex;flex-wrap:wrap;gap:8px;margin-top:4px}
+  .check{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);
+    border-radius:8px;padding:7px 11px;font-size:13.5px;cursor:pointer;background:#fff}
+  .check input{accent-color:var(--accent)}
+  .check.on{border-color:var(--engaged);background:#FBEEE8;color:var(--engaged);font-weight:600}
+  .saveline{display:flex;align-items:center;gap:14px;margin-top:6px}
+  .saved{color:var(--clear);font-size:13px;font-weight:600;opacity:0;transition:.2s}
+  .saved.on{opacity:1}
+  .note{font-size:12.5px;color:var(--muted);background:#F4F6F5;border:1px solid var(--line);
+    border-radius:8px;padding:10px 12px;margin-top:8px}
+  .sec-title{font-weight:680;font-size:15px;margin:0 0 4px}
+  .sec-sub{color:var(--muted);font-size:13px;margin:0 0 16px}
+  hr.div{border:0;border-top:1px solid var(--line);margin:22px 0}
+  @media(max-width:620px){.grid2{grid-template-columns:1fr}.mapgrid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <div class="eyebrow">Land acquisition · records check</div>
+      <h1>Parcel Check <span class="codey">// HubSpot</span></h1>
+    </div>
+    <p class="sub">Upload a new property list and see which parcels are already on file in HubSpot — matched by APN, owner, or mailing address — and where each one stands.</p>
+  </header>
+
+  <nav>
+    <button id="tab-check" class="on" onclick="showTab('check')">Check a list</button>
+    <button id="tab-settings" onclick="showTab('settings')">Settings</button>
+  </nav>
+
+  <!-- ============ CHECK ============ -->
+  <section id="panel-check" class="panel on">
+    <div class="card">
+      <span class="label">Your new property list</span>
+      <div id="drop" class="drop">
+        <div><strong>Choose a CSV</strong> or drop it here</div>
+        <div class="hint">Your file is read on this computer and matched against HubSpot. Nothing is uploaded anywhere.</div>
+        <input id="file" type="file" accept=".csv,text/csv" hidden>
+      </div>
+      <div id="filebar" class="filebar" style="display:none">
+        <span class="name" id="fname"></span>
+        <button class="x" onclick="clearFile()">remove</button>
+      </div>
+
+      <div id="colmap" class="colmap" style="display:none">
+        <div class="colmap-head">Column mapping <span class="colmap-sub">— your file’s columns, and the HubSpot property each is checked against. Adjust only if a guess looks wrong.</span></div>
+        <div id="colmap-rows" class="mapgrid"></div>
+        <div id="colmap-warn" class="colmap-warn" style="display:none"></div>
+      </div>
+
+      <div class="row">
+        <button id="run" class="btn" disabled onclick="run()">Run check</button>
+        <span id="needtoken" class="badge-no" style="display:none;font-size:13px">
+          Add your HubSpot token under <a style="color:var(--accent);cursor:pointer" onclick="showTab('settings')">Settings</a> first.
+        </span>
+      </div>
+
+      <div id="status" class="status"><span class="spin"></span><span id="statustext"></span></div>
+      <div id="err" class="err"></div>
+
+      <div class="synced" id="syncline" style="display:none">
+        Parcels loaded: <b id="synccount">—</b> · last refreshed <span id="syncwhen">—</span>
+        <a onclick="resync()">Refresh from HubSpot</a>
+        <span style="color:var(--muted)">· auto-refreshes hourly</span>
+      </div>
+    </div>
+
+    <div id="summary" class="summary">
+      <div class="stamp">
+        <div class="bignum"><span id="matchnum">0</span><span class="of"> / <span id="totalnum">0</span></span></div>
+        <div class="stampnote">
+          <div class="t" id="stamptitle">already on file</div>
+          <div class="d" id="stampdesc"></div>
+          <span id="engtag" class="engtag" style="display:none"></span>
+        </div>
+        <button class="btn" onclick="download()">Download results CSV</button>
+      </div>
+      <div class="tablewrap"><table id="rtable"></table></div>
+      <div id="truncnote" class="trunc" style="display:none"></div>
+    </div>
+  </section>
+
+  <!-- ============ SETTINGS ============ -->
+  <section id="panel-settings" class="panel">
+    <div class="card">
+      <p class="sec-title">HubSpot connection</p>
+      <p class="sec-sub">A read-only HubSpot Service Key (or legacy Private App token). Stored only on this computer.</p>
+      <div class="field">
+        <span class="label">Access token</span>
+        <input id="token" type="password" placeholder="Paste your HubSpot key  (leave blank to keep current)">
+        <p class="help" id="tokenstate"></p>
+      </div>
+      <div class="saveline">
+        <button class="btn ghost sm" onclick="loadProps()">Load properties from HubSpot</button>
+        <span id="propstate" class="help"></span>
+      </div>
+      <hr class="div">
+      <div class="field" style="margin-bottom:0">
+        <span class="label">Auto-refresh interval</span>
+        <div style="display:flex;align-items:center;gap:8px;font-size:14px">
+          Re-pull parcels from HubSpot every
+          <input id="cacheminutes" type="number" min="0" step="5" style="width:80px">
+          minutes
+        </div>
+        <p class="help">How long cached parcels are reused before automatically re-pulling. 0 = only when you click “Refresh from HubSpot”.</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <p class="sec-title">What we check against in HubSpot</p>
+      <p class="sec-sub">Pick the company properties that hold each value. Load properties above first.</p>
+      <div class="mapgrid">
+        <span class="ml">APN</span><select id="p-apn" data-k="apn"></select>
+        <span class="ml">Owner entity</span><select id="p-owner" data-k="owner"></select>
+        <span class="ml">Mailing address</span><select id="p-address" data-k="address"></select>
+        <span class="ml">Lead status</span><select id="p-status" data-k="status" onchange="renderStatuses()"></select>
+        <span class="ml">County <span style="font-weight:400;color:var(--muted)">(optional)</span></span><select id="p-county" data-k="county"></select>
+      </div>
+      <p class="help" style="margin-top:8px">Set a County property only if you work across multiple counties — APNs can repeat between counties, so this scopes APN matches to the same county. Leave it as “none” otherwise.</p>
+
+      <hr class="div">
+      <p class="sec-title">“Already engaged” statuses</p>
+      <p class="sec-sub">Tick the lead-status values that mean you’re already working it. Matched rows with these get flagged.</p>
+      <div id="statuschecks" class="checks"></div>
+      <input id="statusfallback" type="text" placeholder="comma-separated statuses, e.g. interested, signed" style="display:none">
+    </div>
+
+    <div class="card">
+      <div class="saveline">
+        <button class="btn" onclick="saveSettings()">Save settings</button>
+        <span id="saved" class="saved">Saved</span>
+      </div>
+    </div>
+  </section>
+</div>
+
+<div style="max-width:980px;margin:0 auto;padding:14px 22px 44px;text-align:center">
+  <a id="quitlink" style="color:var(--muted);font-size:12.5px;cursor:pointer;text-decoration:underline"
+     onclick="quitApp()">Quit Parcel Check</a>
+</div>
+
+<script>
+let FILE=null, CSVTEXT="", CONFIG=null, PROPS=[], RESULT=null;
+
+function showTab(t){
+  document.getElementById('panel-check').classList.toggle('on',t==='check');
+  document.getElementById('panel-settings').classList.toggle('on',t==='settings');
+  document.getElementById('tab-check').classList.toggle('on',t==='check');
+  document.getElementById('tab-settings').classList.toggle('on',t==='settings');
+}
+function fmtTime(ts){ if(!ts) return '—'; const d=new Date(ts*1000);
+  return d.toLocaleString([], {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}); }
+function showErr(m){ const e=document.getElementById('err'); e.textContent=m; e.classList.add('on'); }
+function clearErr(){ document.getElementById('err').classList.remove('on'); }
+function setStatus(on,txt){ const s=document.getElementById('status');
+  s.classList.toggle('on',on); if(txt) document.getElementById('statustext').textContent=txt; }
+
+// ---- file handling ----
+const drop=document.getElementById('drop'), fileInput=document.getElementById('file');
+drop.onclick=()=>fileInput.click();
+fileInput.onchange=e=>{ if(e.target.files[0]) takeFile(e.target.files[0]); };
+['dragover','dragenter'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('over');}));
+['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('over');}));
+drop.addEventListener('drop',e=>{ const f=e.dataTransfer.files[0]; if(f) takeFile(f); });
+let HEADERS=[], COLSEL={};
+function takeFile(f){
+  FILE=f;
+  const r=new FileReader();
+  r.onload=async ()=>{ CSVTEXT=r.result;
+    document.getElementById('fname').textContent=f.name;
+    document.getElementById('filebar').style.display='flex';
+    drop.style.display='none';
+    HEADERS=parseHeaderLine(CSVTEXT);
+    await locateColumns();
+    updateRun(); };
+  r.readAsText(f);
+}
+function parseHeaderLine(text){
+  const firstLine=(text.split(/\r?\n/)[0]||'');
+  const out=[]; let cur='', q=false;
+  for(let i=0;i<firstLine.length;i++){ const ch=firstLine[i];
+    if(ch==='"'){ if(q&&firstLine[i+1]==='"'){cur+='"';i++;} else q=!q; }
+    else if(ch===','&&!q){ out.push(cur.trim()); cur=''; }
+    else cur+=ch; }
+  out.push(cur.trim());
+  return out.map(h=>h.replace(/^\ufeff/,''));
+}
+async function locateColumns(){
+  let detected={};
+  try{ detected=(await api('/api/detect',{headers:HEADERS})).cols||{}; }catch(e){}
+  // which fields matter: apn/owner/address always; county only if configured
+  const fields=[['apn','APN'],['owner','Owner entity'],['address','Mailing address']];
+  if(CONFIG&&CONFIG.props&&CONFIG.props.county) fields.push(['county','County']);
+  COLSEL={};
+  const rowsEl=document.getElementById('colmap-rows'); rowsEl.innerHTML='';
+  let missing=[];
+  for(const [k,lbl] of fields){
+    const found=detected[k]||'';
+    COLSEL[k]=found;
+    const hsprop=(CONFIG&&CONFIG.props&&CONFIG.props[k])?CONFIG.props[k]:'(not set in Settings)';
+    const ml=document.createElement('span'); ml.className='ml';
+    ml.innerHTML=lbl+(found?' <span class="auto">✓ located</span>':' <span class="miss">not found</span>')
+      +`<span class="hsmap">checked against HubSpot: <code>${esc(hsprop)}</code></span>`;
+    const sel=document.createElement('select'); sel.dataset.k=k;
+    sel.innerHTML='<option value="">— none —</option>'+
+      HEADERS.map(h=>`<option value="${esc(h)}" ${h===found?'selected':''}>${esc(h)}</option>`).join('');
+    sel.onchange=()=>{ COLSEL[k]=sel.value; checkColWarn(); };
+    rowsEl.appendChild(ml); rowsEl.appendChild(sel);
+    if(k!=='county'&&!found) missing.push(lbl);
+  }
+  document.getElementById('colmap').style.display='block';
+  checkColWarn();
+}
+function checkColWarn(){
+  const need=['apn','owner','address'].filter(k=>!COLSEL[k]);
+  const w=document.getElementById('colmap-warn');
+  if(need.length===3){ w.style.display='block';
+    w.textContent='None of APN, owner, or address could be located in this file — pick at least one above to run a check.'; }
+  else w.style.display='none';
+  updateRun();
+}
+function clearFile(){ FILE=null; CSVTEXT=""; HEADERS=[]; COLSEL={}; fileInput.value="";
+  document.getElementById('filebar').style.display='none';
+  document.getElementById('colmap').style.display='none';
+  drop.style.display='block'; updateRun(); }
+function updateRun(){
+  const hasTok = CONFIG && CONFIG.token_set;
+  const hasCol = ['apn','owner','address'].some(k=>COLSEL[k]);
+  document.getElementById('run').disabled = !(FILE && hasTok && hasCol);
+  document.getElementById('needtoken').style.display = hasTok ? 'none':'inline';
+}
+
+// ---- run ----
+async function run(){
+  clearErr(); document.getElementById('summary').classList.remove('on');
+  document.getElementById('run').disabled=true;
+  try{
+    setStatus(true,'Syncing parcels from HubSpot…');
+    const s=await api('/api/sync',{force:false});
+    paintSync(s);
+    setStatus(true,'Matching your list…');
+    RESULT=await api('/api/check',{csv_text:CSVTEXT, cols:COLSEL});
+    setStatus(false);
+    paintResult(RESULT);
+  }catch(e){ setStatus(false); showErr(e.message); }
+  document.getElementById('run').disabled=false;
+}
+async function resync(){
+  clearErr();
+  try{ setStatus(true,'Refreshing parcels from HubSpot…');
+    const s=await api('/api/sync',{force:true}); paintSync(s); setStatus(false);
+  }catch(e){ setStatus(false); showErr(e.message); }
+}
+function paintSync(s){
+  document.getElementById('syncline').style.display='block';
+  document.getElementById('synccount').textContent=s.count.toLocaleString();
+  document.getElementById('syncwhen').textContent=fmtTime(s.synced_at);
+}
+function paintResult(r){
+  document.getElementById('summary').classList.add('on');
+  document.getElementById('matchnum').textContent=r.matched.toLocaleString();
+  document.getElementById('totalnum').textContent=r.total.toLocaleString();
+  const clear=r.total-r.matched;
+  document.getElementById('stampdesc').textContent =
+    `${clear.toLocaleString()} look clear to pursue · matched on APN, owner, or address`;
+  const et=document.getElementById('engtag');
+  if(r.engaged_enabled){ et.style.display='inline-block';
+    et.textContent=`${r.engaged} already engaged`; } else et.style.display='none';
+
+  // table
+  const t=document.getElementById('rtable');
+  let html='<thead><tr>'+r.columns.map(c=>`<th>${esc(c)}</th>`).join('')+'</tr></thead><tbody>';
+  for(const row of r.rows){
+    const hit=row.match_found==='YES';
+    const eng=row.already_engaged==='YES';
+    html+=`<tr class="${hit?(eng?'hit eng':'hit'):''}">`;
+    for(const c of r.columns){
+      let v=row[c]==null?'':String(row[c]);
+      let cell=esc(v);
+      if(c==='matched_on'&&v) cell=v.split(';').map(x=>`<span class="chip">${esc(x)}</span>`).join('');
+      else if(c==='match_found') cell=hit?'<span class="badge-yes">YES</span>':'<span class="badge-no">no</span>';
+      else if(c==='already_engaged') cell=eng?'<span class="badge-eng">YES</span>':'<span class="badge-no">'+esc(v)+'</span>';
+      else if(c==='matched_hs_id'&&v) cell=`<span class="code">${esc(v)}</span>`;
+      html+=`<td>${cell}</td>`;
+    }
+    html+='</tr>';
+  }
+  html+='</tbody>'; t.innerHTML=html;
+  const tn=document.getElementById('truncnote');
+  if(r.truncated){ tn.style.display='block';
+    tn.textContent=`Showing first 200 rows. The downloaded CSV has all ${r.total.toLocaleString()}.`; }
+  else tn.style.display='none';
+}
+function download(){
+  if(!RESULT) return;
+  const blob=new Blob([RESULT.csv],{type:'text/csv'});
+  const a=document.createElement('a');
+  const base=(FILE?FILE.name:'list').replace(/\.csv$/i,'');
+  a.href=URL.createObjectURL(blob); a.download=base+'_checked.csv'; a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+// ---- settings ----
+async function loadProps(){
+  const ps=document.getElementById('propstate'); ps.textContent='Loading…';
+  // save token first if entered, so the call can authenticate
+  const tok=document.getElementById('token').value;
+  if(tok) await api('/api/config',{token:tok});
+  try{
+    const d=await api('/api/properties',{});
+    PROPS=d.properties;
+    fillSelects();
+    ps.textContent=`Loaded ${PROPS.length} properties. Pick your fields below.`;
+    await refreshConfig();
+  }catch(e){ ps.textContent=''; showSettingsErr(e.message); }
+}
+function showSettingsErr(m){ alert(m); }
+function fillSelects(){
+  for(const sel of document.querySelectorAll('.mapgrid select')){
+    const k=sel.dataset.k, cur=CONFIG&&CONFIG.props?CONFIG.props[k]:'';
+    sel.innerHTML='<option value="">— choose —</option>'+
+      PROPS.map(p=>`<option value="${esc(p.name)}" ${p.name===cur?'selected':''}>${esc(p.label)}  (${esc(p.name)})</option>`).join('');
+  }
+  renderStatuses();
+}
+function renderStatuses(){
+  const statusName=document.getElementById('p-status').value;
+  const prop=PROPS.find(p=>p.name===statusName);
+  const wrap=document.getElementById('statuschecks');
+  const fb=document.getElementById('statusfallback');
+  const chosen=new Set((CONFIG&&CONFIG.engaged_statuses)||[]);
+  if(prop&&prop.options&&prop.options.length){
+    fb.style.display='none';
+    wrap.innerHTML=prop.options.map(o=>{
+      const on=chosen.has(o);
+      return `<label class="check ${on?'on':''}"><input type="checkbox" value="${esc(o)}" ${on?'checked':''} onchange="this.closest('.check').classList.toggle('on',this.checked)">${esc(o)}</label>`;
+    }).join('');
+  }else{
+    wrap.innerHTML=''; fb.style.display='block';
+    fb.value=[...chosen].join(', ');
+  }
+}
+function collectStatuses(){
+  const boxes=document.querySelectorAll('#statuschecks input:checked');
+  if(boxes.length||document.getElementById('statusfallback').style.display==='none')
+    return [...boxes].map(b=>b.value);
+  return document.getElementById('statusfallback').value.split(',').map(s=>s.trim()).filter(Boolean);
+}
+async function saveSettings(){
+  const body={ engaged_statuses:collectStatuses() };
+  const cm=parseInt(document.getElementById('cacheminutes').value,10);
+  if(!isNaN(cm)&&cm>=0) body.max_cache_minutes=cm;
+  // only write the property mapping if properties have been loaded (selects populated),
+  // so we never blank out a good config. Empty county is sent so it can be cleared.
+  if(PROPS.length){
+    const props={};
+    for(const sel of document.querySelectorAll('.mapgrid select')) props[sel.dataset.k]=sel.value;
+    body.props=props;
+  }
+  const tok=document.getElementById('token').value;
+  if(tok) body.token=tok;
+  try{
+    await api('/api/config',body);
+    document.getElementById('token').value='';
+    const sv=document.getElementById('saved'); sv.classList.add('on'); setTimeout(()=>sv.classList.remove('on'),1600);
+    await refreshConfig();
+  }catch(e){ showSettingsErr(e.message); }
+}
+
+// ---- config / api ----
+async function api(path,body){
+  const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
+  const d=await r.json();
+  if(!r.ok) throw new Error(d.error||('Error '+r.status));
+  return d;
+}
+async function refreshConfig(){
+  CONFIG=await (await fetch('/api/config')).json();
+  // token state
+  const ts=document.getElementById('tokenstate');
+  if(CONFIG.token_from_env) ts.textContent='Using the token from your HUBSPOT_TOKEN environment variable.';
+  else if(CONFIG.token_set) ts.textContent='A token is saved on this computer. Leave blank to keep it.';
+  else ts.textContent='No token saved yet.';
+  document.getElementById('cacheminutes').value =
+    (CONFIG.max_cache_minutes==null ? 60 : CONFIG.max_cache_minutes);
+  if(CONFIG.cache){ paintSync(CONFIG.cache); }
+  if(PROPS.length) fillSelects();
+  updateRun();
+}
+function esc(s){ return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+async function quitApp(){
+  if(!confirm('Quit Parcel Check? You can reopen it anytime by double-clicking the app.')) return;
+  try{ await fetch('/api/quit',{method:'POST'}); }catch(e){}
+  document.body.innerHTML='<div style="font-family:var(--sans);max-width:520px;margin:90px auto;'
+    +'text-align:center;color:var(--muted)"><h1 style="color:var(--ink)">Parcel Check has stopped.</h1>'
+    +'<p>You can close this tab. To use it again, double-click the app.</p></div>';
+}
+
+refreshConfig();
+</script>
+</body>
+</html>
