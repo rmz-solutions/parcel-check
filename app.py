@@ -29,7 +29,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import parcel_check as pc
 
-VERSION = "2.0.1"
+VERSION = "2.0.2"
 
 HOSTED = bool(os.environ.get("PORT"))
 PORT = int(os.environ.get("PORT") or os.environ.get("PARCEL_CHECK_PORT") or "8765")

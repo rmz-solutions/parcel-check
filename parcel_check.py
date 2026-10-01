@@ -34,6 +34,7 @@ your headers are unusual.
 
 import argparse
 import csv
+import html
 import json
 import os
 import re
@@ -147,7 +148,7 @@ def normalize_entity(value):
     """
     if not value:
         return ""
-    s = str(value).upper()
+    s = html.unescape(str(value)).upper()   # HubSpot stores some '&' as '&amp;'
     s = _DATE_NOISE_RE.sub(" ", s)
     s = re.sub(r"[^A-Z0-9 ]", " ", s)        # drop punctuation
     tokens = [t for t in s.split() if t and t not in _ENTITY_NOISE]
@@ -166,7 +167,7 @@ def normalize_address(value):
     """
     if not value:
         return ""
-    s = str(value).split(",")[0]          # keep the street line only
+    s = html.unescape(str(value)).split(",")[0]   # keep the street line only
     s = s.upper()
     s = re.sub(r"[.#]", " ", s)
     s = re.sub(r"[^A-Z0-9 ]", " ", s)
