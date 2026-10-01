@@ -266,13 +266,13 @@ def fetch_all_companies(token, props):
         results = data.get("results", [])
         records.extend(results)
         page += 1
-        sys.stderr.write(f"\r  fetched {len(records)} companies ({page} pages)...")
-        sys.stderr.flush()
+        if page % 100 == 0:
+            sys.stderr.write(f"  fetched {len(records)} companies ({page} pages)...\n")
+            sys.stderr.flush()
         paging = data.get("paging", {}).get("next", {})
         after = paging.get("after")
         if not after:
             break
-    sys.stderr.write("\n")
     return records
 
 

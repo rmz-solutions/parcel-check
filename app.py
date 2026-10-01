@@ -29,7 +29,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import parcel_check as pc
 
-VERSION = "2.0.0"
+VERSION = "2.0.1"
 
 HOSTED = bool(os.environ.get("PORT"))
 PORT = int(os.environ.get("PORT") or os.environ.get("PARCEL_CHECK_PORT") or "8765")
@@ -197,35 +197,65 @@ def invalidate_cache():
         _CACHE["idx"] = None
 
 
+_FETCH_LOCK = threading.Lock()   # one HubSpot pull at a time
+
+
 def do_sync(cfg, force=False):
-    """Indexed parcels: memory cache, then disk cache, then a fresh HubSpot pull."""
+    """Indexed parcels. Checks never wait on a refresh: while a cache exists it
+    is served as-is and the background loop (or a forced refresh) swaps in the
+    new index when the pull finishes."""
     token = get_token(cfg)
     if not token:
         raise ValueError("No HubSpot token set." + ("" if HOSTED else " Add it under Settings."))
     max_age = float(cfg.get("max_cache_minutes", 60)) * 60
-    with _LOCK:
-        if _CACHE["idx"] is not None and not force and not _stale(_CACHE["synced_at"], max_age):
+    if _CACHE["idx"] is not None and not force:
+        return _summary()
+    props = cfg["props"]
+    need = _needed_props(props)
+    with _FETCH_LOCK:
+        # another request may have finished a pull while we waited
+        if _CACHE["idx"] is not None and not force:
             return _summary()
-        props = cfg["props"]
-        need = _needed_props(props)
         if not force:
             cached = _load_disk_cache()
             if (cached and set(need).issubset(set(cached.get("props_fetched", [])))
                     and not _stale(cached.get("saved_at", 0), max_age)):
                 idx = pc.build_indexes(cached["companies"], props)
-                _set_cache(idx, len(cached["companies"]), cached.get("saved_at", 0))
+                with _LOCK:
+                    _set_cache(idx, len(cached["companies"]), cached.get("saved_at", 0))
                 return _summary()
+        t0 = time.time()
         companies = pc.fetch_all_companies(token, need)
-        _save_disk_cache(companies, need)
         idx = pc.build_indexes(companies, props)
-        _set_cache(idx, len(companies), time.time())
+        with _LOCK:
+            _set_cache(idx, len(companies), time.time())
+        print("Pulled %d parcels from HubSpot in %.0fs" % (len(companies), time.time() - t0))
+        _save_disk_cache(companies, need)
         return _summary()
 
 
 def _summary():
     return {"count": _CACHE["count"], "synced_at": _CACHE["synced_at"],
             "apn": _CACHE["apn"], "owner": _CACHE["owner"],
-            "address": _CACHE["address"]}
+            "address": _CACHE["address"],
+            "loading": _CACHE["idx"] is None, "refreshing": _FETCH_LOCK.locked()}
+
+
+def start_sync(cfg, force=False):
+    """Kick off a pull in a background thread and return the current state at
+    once, so no HTTP request ever waits minutes on HubSpot."""
+    if not get_token(cfg):
+        raise ValueError("No HubSpot token set." + ("" if HOSTED else " Add it under Settings."))
+    if force or _CACHE["idx"] is None:
+        if not _FETCH_LOCK.locked():
+            def job():
+                try:
+                    do_sync(cfg, force=force)
+                except BaseException as e:
+                    print("Parcel refresh failed: %s" % e)
+            threading.Thread(target=job, daemon=True).start()
+            time.sleep(0.05)
+    return _summary()
 
 
 def run_check(cfg, csv_text, client_cols=None):
@@ -310,18 +340,19 @@ def run_check(cfg, csv_text, client_cols=None):
 
 
 def _warm_loop():
-    """Keep the parcel cache warm so the first check of the day is instant."""
+    """Pull parcels at startup, then re-pull in the background whenever the
+    cache passes max_cache_minutes, so checks always run against memory."""
     while True:
         cfg = load_config()
+        minutes = float(cfg.get("max_cache_minutes", 60))
         try:
             if get_token(cfg):
-                s = do_sync(cfg)
-                print("Parcel cache: %d parcels (synced %s)" % (
-                    s["count"], time.strftime("%Y-%m-%d %H:%M", time.localtime(s["synced_at"]))))
+                stale = _CACHE["idx"] is None or _stale(_CACHE["synced_at"], minutes * 60)
+                if stale:
+                    do_sync(cfg, force=_CACHE["idx"] is not None)
         except BaseException as e:  # pc raises SystemExit on API failure
-            print("Parcel cache refresh failed: %s" % e)
-        minutes = float(cfg.get("max_cache_minutes", 60)) or 60
-        time.sleep(max(60, minutes * 60 + 5))
+            print("Parcel refresh failed: %s" % e)
+        time.sleep(60)
 
 
 # ===========================================================================
@@ -468,7 +499,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/sync":
                 cfg = load_config()
                 force = self._body().get("force", False)
-                return self._json(200, do_sync(cfg, force=force))
+                return self._json(200, start_sync(cfg, force=force))
 
             if path == "/api/detect":
                 headers = self._body().get("headers", [])

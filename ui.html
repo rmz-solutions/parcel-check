@@ -368,8 +368,7 @@ async function run(){
   clearErr(); document.getElementById('summary').classList.remove('on');
   document.getElementById('run').disabled=true;
   try{
-    setStatus(true,'Syncing parcels from HubSpot…');
-    const s=await api('/api/sync',{force:false});
+    const s=await waitForParcels();
     paintSync(s);
     setStatus(true,'Matching your list…');
     RESULT=await api('/api/check',{csv_text:CSVTEXT, cols:COLSEL});
@@ -380,9 +379,21 @@ async function run(){
 }
 async function resync(){
   clearErr();
-  try{ setStatus(true,'Refreshing parcels from HubSpot…');
-    const s=await api('/api/sync',{force:true}); paintSync(s); setStatus(false);
+  try{ setStatus(true,'Refreshing parcels from HubSpot… (about 4 minutes; checks keep working meanwhile)');
+    const before=(await api('/api/sync',{force:true})).synced_at;
+    let s;
+    do{ await sleep(5000); s=await api('/api/sync',{}); }while(s.refreshing && s.synced_at===before);
+    paintSync(s); setStatus(false);
   }catch(e){ setStatus(false); showErr(e.message); }
+}
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+async function waitForParcels(){
+  let s=await api('/api/sync',{});
+  while(s.loading){
+    setStatus(true,'Loading parcels from HubSpot for the first time since the last deploy… (about 4 minutes)');
+    await sleep(5000); s=await api('/api/sync',{});
+  }
+  return s;
 }
 function paintSync(s){
   document.getElementById('syncline').style.display='block';
